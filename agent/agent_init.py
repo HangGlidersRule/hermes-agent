@@ -2080,6 +2080,17 @@ def _inject_context_engine_tools(agent):
                     _raw_schema,
                 )
                 continue
+            # Context-engine schemas bypass the plugin-registry path where
+            # sanitize_tool_schemas runs, so raw shapes (top-level allOf/oneOf/
+            # anyOf from the engine's schema module) would reach strict providers
+            # and 400 the whole turn (Azure OpenAI rejects top-level combinators).
+            try:
+                from tools.schema_sanitizer import sanitize_tool_schemas
+                _schema = sanitize_tool_schemas(
+                    [{"type": "function", "function": _schema}]
+                )[0]["function"]
+            except Exception as _san_err:
+                _ra().logger.debug("Context engine schema sanitization skipped: %s", _san_err)
             _tname = _schema["name"]
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
