@@ -3106,9 +3106,16 @@ def tool_results_this_turn(messages: List[Dict[str, Any]]) -> int:
 
 # Narrow "trailing continue-intent" detector for the stall guard (agent.stall_guards): only the
 # message TAIL announcing a next action, so mid-sentence "I will" never trips it.
+# Announcement-tail shapes beyond the first-person verbs: bare "now" / "now:" closers
+# ("Driving for real now:", "Executing now:") — colon required for the bare-"now" form so
+# completion acknowledgements ("Fixed. Healthy now.") never trip — plus explicit
+# promise-fragment phrases ("no more preamble", "proof or it didn't happen") seen on
+# narration loops where the model promises action in prose and fires nothing.
 _TRAILING_CONTINUE_INTENT_RE = re.compile(
     r"(?:\blet me now\b|\bi(?:['\u2019])?ll now\b|\bi will now\b"
-    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b)"
+    r"|\bnow i(?:['\u2019]ll| will)\b|\bnext[,:] i\b"
+    r"|\bnow\s*:\s*$|\bexecuting now\b|\bno more preamble\b"
+    r"|\bproof or it didn(?:['\u2019])?t happen\b)"
     r"[^.!?\n]{0,100}[.:\u2026]?\s*$", re.IGNORECASE,
 )
 
