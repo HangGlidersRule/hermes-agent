@@ -370,6 +370,30 @@ def test_ignores_plain_final_answers():
     assert not trailing_continue_intent(None)
 
 
+def test_detects_announcement_closers_narration_loop():
+    # Narration-loop closers (GLM-5.3-flash at ~134K context): short replies ENDING on
+    # an action announcement in prose — colon-closed "now" tails and explicit
+    # promise fragments — previously fell through the narrow verb patterns and the
+    # turn reported "complete" with zero tool calls.
+    assert trailing_continue_intent(
+        "Sorry — tool-schema load went quiet on you. Executing now:")
+    assert trailing_continue_intent("Driving for real now:")
+    assert trailing_continue_intent(
+        "Fair — three turns of hot air. Proof or it didn't happen:")
+    assert trailing_continue_intent(
+        "Fair — three turns of hot air. Proof or it didn\u2019t happen:")
+    assert trailing_continue_intent(
+        "You're right to be annoyed — I've narrated three times and fired nothing. "
+        "Calling the driver *in this turn*, no more preamble:")
+
+
+def test_now_closer_requires_colon():
+    # Bare "now" without a colon is a completion acknowledgement, not a promise:
+    assert not trailing_continue_intent("Fixed. The service is healthy now.")
+    assert not trailing_continue_intent("That should do it — everything looks good now.")
+    assert not trailing_continue_intent("All set now.")
+
+
 def test_ignores_conversational_future_offers():
     # "I will" without the immediate-action shape must not trip the guard.
     assert not trailing_continue_intent(
