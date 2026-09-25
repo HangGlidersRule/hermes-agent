@@ -537,6 +537,39 @@ IMAGE_CACHE_DIR = get_hermes_dir("cache/images", "image_cache")
 # --------------------------------------------------------------------------- See #13145.
 DEFAULT_INBOUND_MEDIA_MAX_BYTES = 128 * 1024 * 1024
 
+# Inbound TEXT cap (``gateway.max_inbound_text_chars``): platform clients can attach huge
+# quoted-replay/history blobs to an ordinary-looking message (a Slack/Discord quote of a long
+# message, a client-side context expansion). An uncapped inbound text lands verbatim in the
+# session history and is re-sent on every later API call — megabyte-scale rows compound across
+# turns until the session blows past the model's context window and auto-resets (the Sep 2026
+# ~1.5-1.8M-token reset incidents: 925KB and 1.85MB inbound blobs). The cap keeps the user's
+# own leading text and truncates the tail with a marker, so a quoted reply stays a quoted reply.
+# Default 400,000 chars (~100K tokens) — far above any genuine human message, far below
+# context-window scale. Configurable; ``0`` disables.
+DEFAULT_INBOUND_TEXT_MAX_CHARS = 400_000
+
+
+def get_inbound_text_max_chars() -> int:
+    """Max inbound text chars per message (``gateway.max_inbound_text_chars``);
+    ``0`` / negative / unparseable disables the cap; unreadable config → default."""
+    return _or_default(lambda: int(_config_section("gateway")["max_inbound_text_chars"]),
+                       DEFAULT_INBOUND_TEXT_MAX_CHARS, (KeyError, TypeError, ValueError))
+
+
+def bound_inbound_text(text: Optional[str]) -> Optional[str]:
+    """Truncate oversized inbound message text, preserving the head (user's own words) and
+    marking the cut. Quoted-replay blobs attach at the tail, so head-preserving is correct."""
+    if not text:
+        return text
+    limit = get_inbound_text_max_chars()
+    if not limit or len(text) <= limit:
+        return text
+    return (
+        text[:limit]
+        + f"\n[… inbound message truncated at {limit} chars (was {len(text)} chars) — "
+        "quoted/history expansion dropped; ask the sender to resend the specific part if needed …]"
+    )
+
 
 def get_inbound_media_max_bytes() -> int:
     """Max inbound media bytes held in memory (``gateway.max_inbound_media_bytes``);
@@ -3951,6 +3984,11 @@ class BasePlatformAdapter(ABC):
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
+        # Inbound text cap: bound quoted-replay/history blobs before they enter the
+        # session (megabyte-scale inbound rows compound across turns until the session
+        # auto-resets — Sep 2026 incidents). Applies to the shared funnel for every platform.
+        if event.text:
+            event.text = bound_inbound_text(event.text) or event.text
         if not self._message_handler:
             # No handler = every inbound silently discarded on an adapter that still polls and sends;
             # say so once per adapter (#102260).

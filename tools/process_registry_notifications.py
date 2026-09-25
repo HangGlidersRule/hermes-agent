@@ -139,17 +139,42 @@ def _notice_lines(results) -> "list[str]":
     return ["", *notice] if notice else []
 
 
+# Synthetic injections must never exceed this per field (goal/context in async-delegation
+# notices). Anything larger is truncated with a pointer to session_search. A megabyte-scale
+# goal/context re-injected on every completion is the context-explosion vector that pushed
+# sessions past the model's context window (Sep 2026 auto-resets).
+_INJECT_FIELD_MAX_CHARS = 8_000
+
+
+def _bounded_injection_field(text: str, label: str) -> str:
+    """Truncate a synthetic-injection field to ``_INJECT_FIELD_MAX_CHARS`` with a marker."""
+    if len(text) <= _INJECT_FIELD_MAX_CHARS:
+        return text
+    return (
+        text[:_INJECT_FIELD_MAX_CHARS]
+        + f"\n[… {label} truncated at {_INJECT_FIELD_MAX_CHARS} chars — full text: {len(text)} chars, "
+        "recover with session_search if needed …]"
+    )
+
+
 def _preamble(evt: dict, title: str, intro: str, completed_at: float, *, with_goal: bool) -> "list[str]":
-    """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model."""
+    """Shared preamble: title, intro, blank, dispatch time, [goal], context/toolsets, role+model.
+
+    Goal/context fields are BOUNDED (``_INJECT_FIELD_MAX_CHARS``): a delegation whose
+    goal/context was itself bloated (e.g. a goal created from a context-poisoned session)
+    otherwise re-injects megabytes into the live session on EVERY completion — the
+    context-explosion vector behind repeated ~1.5-1.8M-token auto-resets (Sep 2026).
+    The full text stays available via session_search; the truncated marker says so.
+    """
     lines = [title, intro, ""]
     dispatched_at = evt.get("dispatched_at")
     if isinstance(dispatched_at, (int, float)):
         ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(dispatched_at))
         lines.append(f"Dispatched: {ts} ({_format_age(completed_at - dispatched_at)} ago)")
     if with_goal:
-        lines.append(f"Original goal: {evt.get('goal', '') or ''}")
+        lines.append(f"Original goal: {_bounded_injection_field(evt.get('goal') or '', 'goal')}")
     if evt.get("context"):
-        lines.append(f"Context you provided: {evt['context']}")
+        lines.append(f"Context you provided: {_bounded_injection_field(evt['context'], 'context')}")
     if evt.get("toolsets"):
         lines.append(f"Toolsets: {', '.join(evt['toolsets'])}")
     lines.append(f"Role: {evt.get('role') or 'leaf'}   Model: {evt.get('model') or '?'}")
@@ -220,7 +245,7 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         r_status, r_summary, r_error = r.get("status", "?"), r.get("summary"), r.get("error")
         r_goal = goals[idx] if idx < len(goals) else r.get("goal", "")
         icon = "⚠" if r_truncated else ("✓" if r_status in _DONE else "✗")
-        header = (f"--- {icon} TASK {idx + 1}/{n}" + (f": {r_goal}" if r_goal else "") + f"  (status={r_status}"
+        header = (f"--- {icon} TASK {idx + 1}/{n}" + (f": {_bounded_injection_field(r_goal, 'task goal')}" if r_goal else "") + f"  (status={r_status}"
                   + (f", api_calls={r['api_calls']}" if r.get("api_calls") else "")
                   + (f", {r['duration_seconds']}s" if r.get("duration_seconds") is not None else "")
                   + (", TRUNCATED: hit max_iterations — work may be incomplete" if r_truncated else ""))
@@ -228,11 +253,11 @@ def _format_batch_delegation(evt: dict, deleg_id: str, completed_at: float) -> s
         if r_status in _DONE and r_summary:
             if r_truncated:
                 lines.append(_TRUNCATED_SUMMARY_NOTE)
-            lines.append(r_summary)
+            lines.append(_bounded_injection_field(r_summary, "result summary"))
         elif r_summary:
             if r_error:
                 lines.append(f"({r_status}: {r_error})")
-            lines += ["Partial output:", r_summary]
+            lines += ["Partial output:", _bounded_injection_field(r_summary, "partial output")]
         else:
             lines.append(f"(no summary — status={r_status}" + (f": {r_error}" if r_error else "") + ")")
         if r.get("live_transcript"):
@@ -286,7 +311,7 @@ def _format_async_delegation(evt: dict) -> str:
     if status in _DONE and summary:
         if truncated:
             lines.append(_TRUNCATED_SUMMARY_NOTE)
-        lines.append(summary)
+        lines.append(_bounded_injection_field(summary, "result summary"))
     else:
         if status == "interrupted":
             lines.append("The subagent was interrupted before completing" + (f": {error}" if error else "."))
@@ -295,7 +320,7 @@ def _format_async_delegation(evt: dict) -> str:
                 f"The subagent did not complete successfully (status={status})." + (f"\n{error}" if error else ""))
             lines += _recovery_lines(evt)
         if summary:
-            lines += ["Partial output:", summary]
+            lines += ["Partial output:", _bounded_injection_field(summary, "partial output")]
     return "\n".join(lines)
 
 
