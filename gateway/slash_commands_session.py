@@ -125,13 +125,18 @@ async def discard_lost_turns(authority, session_id) -> str:
         return t("gateway.discard.nothing")
     ref = SessionRef(authority.profile_id, session_id)
     done = 0
+    refused = []
     for row in lost:
         try:
             await authority.resolve_unknown_as_owner(ref, row['admission_id'], row['generation'])
         except RuntimeStoreError as exc:
             logger.warning("/discard of %s refused: %s", row['admission_id'], exc.reason)
+            refused.append(exc.reason)
             continue
         done += 1
+    if refused:
+        # The lost turn is still there and the chat stays paused: never answer "nothing to discard".
+        return t("gateway.discard.refused", count=len(refused), reason=", ".join(sorted(set(refused))))
     return t("gateway.discard.done", count=done) if done else t("gateway.discard.nothing")
 
 
