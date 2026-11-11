@@ -560,10 +560,13 @@ _IMPORT_KEY = 'gateway.prompt_admissions_import.v1'
 
 def _canonical_chain(conn, session_id):
     # Same selector as SessionDB.get_compression_chain, on OUR transaction connection.
-    from hermes_state_compression import _CHAIN_STEP_SQL
+    # Same bound too (_CHAIN_CAP, #125041): a fixed 100 here refused every discard and
+    # recovery on a chat whose compression lineage is deeper than that (a long-lived
+    # Slack channel reached 152), reporting it as ``admission_conflict``.
+    from hermes_state_compression import _CHAIN_CAP, _CHAIN_STEP_SQL
     _session(conn, session_id)
     chain = [session_id]
-    for _ in range(100):
+    for _ in range(_CHAIN_CAP):
         child = conn.execute(_CHAIN_STEP_SQL, (chain[-1],)).fetchone()
         if child is None:
             return chain
